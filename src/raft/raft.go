@@ -1,3 +1,7 @@
+// 1. VoteFor有啥用 一个结点只能给一个人投票吗，如果是就没法保证有结点得到majority的投票了，如果不是则有很多结点有majority的投票了
+// 1.1 应该是一个任期投一次，每个任期清理一下
+// 1.2 什么时候更新任期？是请求投票的时候还是当选的时候？
+// 2. 活着的结点数就是原来的节点数减去任期数（term）
 package raft
 
 //
@@ -43,6 +47,12 @@ type ApplyMsg struct {
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
 
+
+type LogEntries struct {
+	logEntries interface{}
+	term int
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -59,7 +69,7 @@ type Raft struct {
 	// Persistent state on all servers
 	currentTerm int // lastest term server has seen(initializaed to 0)
 	VoteFor     int // candidateId that received vote in current term, -1 for null
-	log         []interface{} // log entries(first index is 1)
+	log         []LogEntries // log entries(first index is 1)
 
 	// Volatile state on all servers
 	commitIndex int // index of highest log entry known to be committed(init 0)
@@ -70,13 +80,13 @@ type Raft struct {
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server(init 0)
 	
 	// Vote state
-	getVote  int // vote number the server get
-	isLeader int // -1 for candidate, 0 for follower, 1 for leader
+	// getVoteNum     int // vote number the server get
+	isLeader    int // -1 for candidate, 0 for follower, 1 for leader
 	
 	heartbeatCh chan int // listen to heartbeat
 	voteCh      chan int // listen to vote
 
-	timer       *time.Timer
+	// timer       *time.Timer
 }
 
 // return currentTerm and whether this server
@@ -160,6 +170,9 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
 	// reply = &RequestVoteReply{}
+
+	rf.voteCh <- 0
+
 	reply.term = rf.currentTerm
 	if args.term < rf.currentTerm{
 		reply.voteGranted = false
@@ -167,6 +180,9 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		if rf.VoteFor == -1 || rf.VoteFor == args.candidateId{
 			if args.lastLogIndex >= rf.commitIndex{
 				reply.voteGranted = true
+				rf.mu.Lock()
+				rf.VoteFor = args.candidateId
+				rf.mu.Unlock()
 				return
 			}
 		}
@@ -198,7 +214,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 
 type AppendEntriesArgs struct {
 	term     int
-	leaderId int
+	// leaderId int
 }
 
 type AppendEntriesReply struct {
@@ -207,7 +223,9 @@ type AppendEntriesReply struct {
 
 // AppedfEntries RPC handler
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
-
+	rf.heartbeatCh <- 0
+	rm.currentTerm = args.term
+	rf.VoteFor = -1
 }
 
 func (rf *Raft) sendAppendEntries(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -249,20 +267,85 @@ func (rf *Raft) Kill() {
 
 
 func getRandTimeout() int{
-    return MIN_TIMEOUT + int(rand.Float32() * (MAX_TIMEOUT - MIN_TIMEOUT))
+	randTimeOut := MIN_TIMEOUT + int(rand.Float32() * (MAX_TIMEOUT - MIN_TIMEOUT))
+	return time.Millisecond * randTimeOut
+}
+
+
+func (rf *Raft) beLeader {
+	for {
+		args = AppendEntriesArgs{term: rf.currentTerm}
+		for i=0; i < len(rf.peers); i++ {
+			if i != rf.me {
+				reply = &AppendEntriesReply{0}
+				go sendAppendEntries(i, args, reply)
+			}
+		}
+		time.Sleep(time.Millisecond * HEARTBEAT)
+	}
+}
+
+
+func (rf *Raft) wantVote() {
+	rf.mu.Lock()
+	rf.isLeader = -1
+	// rf.getVoteNum = 1  // getVoteNum as a local variable may be enough
+	rf.mu.Unlock()
+	
+	voteargs := RequestVoteArgs{term:         rf.currentTerm, 
+							    candidateId:  rf.me,
+							    lastLogIndex: rf.commitIndex,
+							    lastLogTerm:  rf.log[rf.commitIndex].term}
+	getVoteNum := 1
+	for i=0; i < len(rf.peers); i++ {
+		if rf.isLeader == -1 && i != rf.me {
+			reply := &RequestVoteReply{term:        -1, 
+									   voteGranted: false}
+			get_reply := false
+			for !get_reply {
+				// send vote request until get valid reply
+				get_reply = rf.sendRequestVote(i, voteargs, reply)
+			}
+			
+			if reply.voteGranted {
+				getVoteNum += 1
+			}else{
+				// this server's term may not the lastest term
+				// Not certain!!!
+				rf.currentTerm = reply.term
+			}
+		}
+	}
+
+	majorityNum := float(len(rf.peers) - rf.term) / 2.0 // alive node number
+	if float(getVoteNum) > majorityNum {
+		// You are the leader
+		rf.mu.Lock()
+		rf.isLeader = 1
+		rf.currentTerm += 1
+		rf.mu.Unlock()
+		go rf.beLeader()
+	}
 }
 
 
 // listen function for follower
 func (rf *Raft) listen() {
+	timer = time.NewTimer(getRandTimeout)
     for {
 		select {
 		case <- rf.heartbeatCh:
 			// nothing happen
-			rf.timer.Reset(getRandTimeout())
+			rf.mu.Lock()
+			rf.isLeader = 0
+			rf.mu.Unlock()
+			timer.Reset(getRandTimeout())
 		case <- rf.voteCh:
 			// sb wants to be a leader
+			timer.Reset(getRandTimeout())
+		case <- rf.timer.C:
 			
+			go rf.wantVote()
 		}
 	}
 }
@@ -288,17 +371,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here.
 	rf.currentTerm = 0
 	rf.VoteFor = -1
-	rf.log = make([]interface{}, 0)
+	rf.log = make([]LogEntries, 0)
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 
+	// rf.getVoteNum = 0
 	rf.isLeader = 0   // init as follower
 	rf.heartbeatCh = make(chan int)
 	rf.voteCh = make(chan int)
 
-	timeout := time.Millisecond + time.Duration(getRandTimeout())
-	rf.timer = time.NewTimer(timeout)
+	// timeout := time.Millisecond * getRandTimeout()
+	// rf.timer = time.NewTimer(timeout)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 

@@ -316,6 +316,9 @@ func (rf *Raft) beLeader() {
 
 
 
+
+
+
 func (rf *Raft) wantVote() {
 	// fmt.Printf("%v wants to be leader\n", rf.me)
 	rf.mu.Lock()

@@ -1,7 +1,8 @@
 // 1. VoteFor有啥用 一个结点只能给一个人投票吗，如果是就没法保证有结点得到majority的投票了，如果不是则有很多结点有majority的投票了
 // 1.1 应该是一个任期投一次，每个任期清理一下
 // 1.2 什么时候更新任期？是请求投票的时候还是当选的时候？
-// 2. 活着的结点数就是原来的节点数减去任期数（term）
+// 2. 活着的结点数就是减去没有反应的结点
+// 3. 复活的leader应该怎么处理？他应该会继续给别人发东西
 package raft
 
 //
@@ -175,7 +176,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.voteCh <- 0
 
 	reply.Term = rf.currentTerm
-	if args.Term < rf.currentTerm{
+	if args.Term < rf.currentTerm || rf.isLeader == 1 {
 		reply.VoteGranted = false
 	}else{
 		if args.Term > rf.currentTerm && rf.isLeader != 1{
@@ -240,7 +241,11 @@ type AppendEntriesReply struct {
 // AppedfEntries RPC handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.heartbeatCh <- args.leaderId
-	rf.currentTerm = args.Term
+	if rf.currentTerm < args.Term{
+		rf.currentTerm = args.Term
+	}else{
+		reply.Term = rf.currentTerm
+	}
 	rf.VoteFor = -1
 	rf.persist()
 }
@@ -307,16 +312,17 @@ func (rf *Raft) beLeader() {
 				reply := AppendEntriesReply{0}
 				// fmt.Printf("%v send heartbeat to %v\n", rf.me, i)
 				rf.sendAppendEntries(i, &args, &reply)
+			    if reply.Term > rf.currentTerm {
+				    rf.mu.Lock()
+				    rf.isLeader = -1  // 为了复活的结点，醒来发现自己term变了，就退出，但是像他这样复活瞬间就判断的感觉还是不行
+				    rf.mu.Unlock()
+					return
+				}
 			}
 		}
 		time.Sleep(time.Millisecond * time.Duration(HEARTBEAT))
 	}
 }
-
-
-
-
-
 
 
 func (rf *Raft) wantVote() {
@@ -371,21 +377,22 @@ func (rf *Raft) wantVote() {
 				}
 			}
 		}
+		majorityNum := float32(len(rf.peers) - deadNodeNum) / 2.0 // alive node number
+		fmt.Printf("major: %v, getV %v, term %v, id %v\n", majorityNum, getVoteNum, rf.currentTerm, rf.me)
+		if rf.isLeader != -1 {
+			// print("quit\n")
+			return 
+		}
+		if float32(getVoteNum) > majorityNum && rf.isLeader == -1 {
+			// You are the leader
+			go rf.beLeader()
+			return
+		}
 	}
 
-	majorityNum := float32(len(rf.peers) - deadNodeNum) / 2.0 // alive node number
-	// fmt.Printf("major: %v, getV %v, term %v\n", majorityNum, getVoteNum, rf.currentTerm)
-	if rf.isLeader != -1 {
-		// print("quit\n")
-		return 
-	}
-	if float32(getVoteNum) > majorityNum && rf.isLeader == -1 {
-		// You are the leader
-		go rf.beLeader()
-	}else{
-		if rf.isLeader == -1{
-			rf.wantVote()
-		}
+	time.Sleep(getRandTimeout())
+	if rf.isLeader == -1{
+		rf.wantVote()
 	}
 }
 
@@ -400,7 +407,7 @@ func (rf *Raft) listen() {
 			// nothing happen
 			// fmt.Printf("feel heartbeat from %v\n", laId)
 			if rf.me == 2 {
-				fmt.Printf("2 feel heartbeat %v\n", rf.isLeader)
+				// fmt.Printf("2 feel heartbeat %v\n", rf.isLeader)
 			}
 			if rf.isLeader != 0{
 				rf.mu.Lock()

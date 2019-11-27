@@ -278,7 +278,6 @@ func (cfg *config) checkOneLeader() int {
 				lastTermWithLeader = t
 			}
 		}
-		fmt.Printf("%v %v\n", leaders, len(leaders))
 		if len(leaders) != 0 {
 			return leaders[lastTermWithLeader][0]
 		}

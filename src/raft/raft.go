@@ -252,6 +252,7 @@ type AppendEntriesReply struct {
 // AppendEntries RPC handler
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	//fmt.Printf("%v\n", args)
+	// fmt.Printf("[] %v %v %v %v log %v\n", reply.Success, args.LeaderId, rf.me, args.PrevLogIndex, len(rf.log))
 	reply.Term = rf.currentTerm
 
 	rf.mu.Lock()
@@ -272,31 +273,33 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		}else {
 			reply.Success = true
 			if args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm{
+				// fmt.Printf("%d's log: %v %v != %v \n", rf.me, len(rf.log), rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 				rf.log = rf.log[:args.PrevLogIndex]
 				reply.Success = false
-				// fmt.Printf("%d's log: %v\n", rf.me, rf.log)
 			}
 			//fmt.Printf("%v\n", args.Entries)
-			for i:=1; i <= len(args.Entries); i++{
+			for i:=1; i <= len(args.Entries) && reply.Success; i++{
 				if len(rf.log) - 1 < args.PrevLogIndex + i {
 					rf.log = append(rf.log, args.Entries[i-1])
 				}else{
 					rf.log[args.PrevLogIndex+i] = args.Entries[i-1]
 				}
+				// fmt.Printf("log len %d %d %d\n", len(rf.log), rf.log[len(rf.log)-1].LogEntry, args.Entries[i-1])
 			}
-			if args.LeaderCommit > rf.commitIndex && len(args.Entries) > 0 && reply.Success {
+			if args.LeaderCommit > rf.commitIndex && reply.Success {
 				rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.log) - 1)))
 				//fmt.Printf("%d %d %d\n", rf.lastApplied+1, rf.commitIndex, len(rf.log))
 				for i:=rf.lastApplied+1; i <= rf.commitIndex; i++ {
 					rf.applyCh <- ApplyMsg{i+1, rf.log[i].LogEntry, false, nil}
 					rf.lastApplied = i
-					// fmt.Printf("id:%d commit %d\n", rf.me, i)
+					// fmt.Printf("id:%d commit index %d term %d\n", rf.me, i, rf.log[i].Term)
 				}
 			}
 		}
 	}
 	// reply.Term = rf.currentTerm
 	// rf.VoteFor = -1
+	// fmt.Printf("%v %v log %v\n", reply.Success, rf.me, len(rf.log))
 	rf.persist()
 	rf.mu.Unlock()
 }
@@ -326,7 +329,7 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 				// fmt.Printf("%d\n", countMatch)
 				if countMatch * 2 > len(rf.peers) {
 					rf.commitIndex = i
-					// fmt.Printf("Leader %d commit index %d\n", rf.me, i)
+					// fmt.Printf("Leader %d commit index %d term %d\n", rf.me, i, rf.log[i].Term)
 					break
 				}
 			}
@@ -370,6 +373,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.matchIndex[rf.me] = len(rf.log) - 1
 		index = len(rf.log)  // begin from 1 but we begin from 0 in programming
 		// fmt.Printf("Leader %d log %v\n", rf.me, rf.log)
+		// fmt.Printf("%d got log %v %d\n", rf.me, command, index)
 		rf.persist()
 		rf.mu.Unlock()
 
@@ -378,15 +382,20 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				go func(thisID int){
 					lastLogIndex := len(rf.log) - 1
 					argEntries := make([]LogEntries, 0)
-					args := AppendEntriesArgs{rf.currentTerm, rf.me, -1, -1, argEntries, rf.commitIndex}
+					prevLogIndex := rf.nextIndex[thisID] - 1
+					prevLogTerm := -1
+					if prevLogIndex >= 0 {
+						prevLogTerm = rf.log[prevLogIndex].Term
+					}
+					args := AppendEntriesArgs{rf.currentTerm, rf.me, prevLogIndex, prevLogTerm, argEntries, rf.commitIndex}
 					if lastLogIndex >= rf.nextIndex[thisID] {
-						prevLogIndex := rf.nextIndex[thisID] - 1
-						prevLogTerm := -1
-						if prevLogIndex >= 0 {
-							prevLogTerm = rf.log[prevLogIndex].Term
-						}
-						args.PrevLogIndex = prevLogIndex
-						args.PrevLogTerm = prevLogTerm
+						//prevLogIndex := rf.nextIndex[thisID] - 1
+						//prevLogTerm := -1
+						//if prevLogIndex >= 0 {
+						//	prevLogTerm = rf.log[prevLogIndex].Term
+						//}
+						//args.PrevLogIndex = prevLogIndex
+						//args.PrevLogTerm = prevLogTerm
 						// args.Entries = rf.log[rf.nextIndex[thisID]:]
 						for ind:=rf.nextIndex[thisID]; ind < len(rf.log); ind++ {
 							args.Entries = append(args.Entries, rf.log[ind])
@@ -439,20 +448,26 @@ func (rf *Raft) beLeader() {
 				go func(thisID int){
 					lastLogIndex := len(rf.log) - 1
 					argEntries := make([]LogEntries, 0)
-					args := AppendEntriesArgs{rf.currentTerm, rf.me, -1, -1, argEntries, rf.commitIndex}
-					if lastLogIndex >= rf.nextIndex[thisID] || rf.matchIndex[thisID] < 0 {
+					prevLogIndex := rf.nextIndex[thisID] - 1
+					prevLogTerm := -1
+					if prevLogIndex >= 0 {
+						prevLogTerm = rf.log[prevLogIndex].Term
+					}
+					args := AppendEntriesArgs{rf.currentTerm, rf.me, prevLogIndex, prevLogTerm, argEntries, rf.commitIndex}
+					if lastLogIndex >= rf.nextIndex[thisID]{
 					//if true {
-						prevLogIndex := rf.nextIndex[thisID] - 1
-						prevLogTerm := -1
-						if prevLogIndex >= 0 {
-							prevLogTerm = rf.log[prevLogIndex].Term
-						}
-						args.PrevLogIndex = prevLogIndex
-						args.PrevLogTerm = prevLogTerm
+						//prevLogIndex := rf.nextIndex[thisID] - 1
+						//prevLogTerm := -1
+						//if prevLogIndex >= 0 {
+						//	prevLogTerm = rf.log[prevLogIndex].Term
+						//}
+						//args.PrevLogIndex = prevLogIndex
+						//args.PrevLogTerm = prevLogTerm
 						// args.Entries = rf.log[rf.nextIndex[thisID]:]
 
 						for ind:=rf.nextIndex[thisID]; ind < len(rf.log); ind++ {
 							args.Entries = append(args.Entries, rf.log[ind])
+							// fmt.Printf("log len %d %d\n", len(args.Entries), rf.log[ind].LogEntry)
 						}
 						args.LeaderCommit = rf.commitIndex
 					}
@@ -563,7 +578,7 @@ func (rf *Raft) countVote(getVoteNum int, deadNodeNum int) bool {
 	if float32(getVoteNum) > majorityNum && rf.isLeader == -1 && getVoteNum > 1{
 		// You are the leader
 		rf.mu.Lock()
-		// fmt.Printf("%d become leader maj: %v vote: %v\n", rf.me, majorityNum, getVoteNum)
+		// fmt.Printf("%d become leader maj: %v vote: %v log %d\n", rf.me, majorityNum, getVoteNum, len(rf.log))
 		rf.isLeader = 1
 		rf.persist()
 		rf.mu.Unlock()
